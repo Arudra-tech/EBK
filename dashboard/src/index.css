@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-zinc-950 text-zinc-200 antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.mono {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.card {
+  @apply rounded-xl border border-zinc-800 bg-zinc-900/60 p-4;
+}
+
+.trace-glow-ok {
+  filter: drop-shadow(0 0 6px rgba(52, 211, 153, 0.55));
+}
+
+.trace-glow-bad {
+  filter: drop-shadow(0 0 6px rgba(248, 113, 113, 0.6));
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.toast {
+  animation: toast-in 0.18s ease-out;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+.live-dot {
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
