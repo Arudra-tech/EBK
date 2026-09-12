@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -204,13 +205,17 @@ def make_runtime(cfg: DeployConfig) -> Runtime:
 
 
 class RuntimeCache:
-    """One runtime object per config key. Loading happens under the GPU lock so it
-    never races the live loop."""
+    """One runtime object per config key. Loads are serialized with their own lock
+    and deliberately do NOT take the GPU lock: deserializing a model alongside the
+    live loop's inference is safe (one CUDA context, PyTorch/TRT manage it), and
+    holding the GPU lock for each preload starved the live loop — telemetry read
+    0.0 for the whole preload."""
 
     def __init__(self, gpu_lock: threading.Lock):
         self._rt: dict[tuple, Runtime] = {}
         self._errors: dict[str, str] = {}
-        self._gpu_lock = gpu_lock
+        self._gpu_lock = gpu_lock  # kept for callers that want it; unused for loads
+        self._load_lock = threading.Lock()
         self._meta_lock = threading.Lock()
 
     def peek(self, cfg: DeployConfig) -> Runtime | None:
@@ -220,13 +225,15 @@ class RuntimeCache:
         rt = self._rt.get(cfg.key())
         if rt is not None and rt.loaded:
             return rt
-        with self._gpu_lock:
+        with self._load_lock:
             rt = self._rt.get(cfg.key())
             if rt is not None and rt.loaded:
                 return rt
             rt = make_runtime(cfg)
             log.info("loading %s via %s", cfg.label(), rt.backend_actual)
+            t = time.perf_counter()
             rt.load()
+            log.info("loaded %s in %.1fs", cfg.label(), time.perf_counter() - t)
             with self._meta_lock:
                 self._rt[cfg.key()] = rt
                 self._errors.pop(cfg.slug(), None)

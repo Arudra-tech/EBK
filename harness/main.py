@@ -28,7 +28,7 @@ from . import artifacts
 from .accuracy import AccuracyTable
 from .bench import run_benchmark
 from .config import BASELINE, PROPOSED, SETTINGS, DeployConfig
-from .device import DeviceProbe, default_profile, detect, device_info
+from .device import DeviceProbe, NullProbe, default_profile, detect, device_info
 from .live import FrameSource, LiveLoop
 from .runtimes import RuntimeCache, RuntimeUnavailable
 
@@ -46,9 +46,58 @@ class State:
     boot_ts: float
     bench_lock: threading.Lock
     last_bench: dict | None = None
+    boot_phase: str = "starting"
+    boot_error: str | None = None
+    device_info: dict | None = None
 
 
 S = State()
+
+
+def _phase(p: str) -> None:
+    S.boot_phase = p
+    log.info("boot: %s", p)
+
+
+def _boot() -> None:
+    """Everything slow happens here, off the event loop, so the port is bound and
+    /health answers from the first second. Watch `boot_phase` to see where it is."""
+    try:
+        _phase("probe")
+        S.probe = detect()
+        S.probe.start()
+        _phase("accuracy table")
+        S.accuracy = AccuracyTable(artifacts.accuracy_path())
+        _phase("frames")
+        frames = FrameSource(SETTINGS.data_dir / "frames", SETTINGS.live_source)
+        log.info("frames: %s", frames.origin)
+        S.live = LiveLoop(S.cache, S.gpu_lock, frames)
+        S.live.start()
+
+        _phase(f"loading baseline {BASELINE.label()} (first CUDA init: 5-30 s)")
+        S.preload_errors = S.cache.preload([BASELINE])
+        if S.preload_errors.get(BASELINE.slug()) is None:
+            S.live.set_config(BASELINE)
+        else:
+            log.error("baseline failed to load: %s — /telemetry will report no latency", S.preload_errors)
+        log.info("harness up: device_key=%s profile=%s model=%s", artifacts.device_key(), default_profile(S.probe), SETTINGS.model)
+
+        if SETTINGS.preload == "all":
+            rest = [c for c in PROPOSED if c.key() != BASELINE.key()]
+            for i, c in enumerate(rest, 1):
+                # a benchmark request must never queue behind an engine deserialize
+                while S.bench_lock.locked():
+                    time.sleep(0.1)
+                _phase(f"preloading {i}/{len(rest)} {c.label()}")
+                S.preload_errors.update(S.cache.preload([c]))
+            log.info("preload done: %s", S.cache.status()["errors"] or "all ok")
+        _phase("device info")
+        S.device_info = device_info(S.probe)  # shells out to nvidia-smi/nvpmodel once, not per request
+        _phase("ready")
+    except Exception as e:  # never die silently — surface it in /health
+        S.boot_error = f"{type(e).__name__}: {e}"
+        _phase(f"FAILED: {S.boot_error}")
+        log.exception("boot failed")
 
 
 @asynccontextmanager
@@ -56,29 +105,12 @@ async def lifespan(app: FastAPI):
     S.boot_ts = time.time()
     S.gpu_lock = threading.Lock()
     S.bench_lock = threading.Lock()
-    S.probe = detect()
-    S.probe.start()
+    S.probe = NullProbe()  # placeholders until _boot swaps the real ones in
     S.accuracy = AccuracyTable(artifacts.accuracy_path())
     S.cache = RuntimeCache(S.gpu_lock)
-    frames = FrameSource(SETTINGS.data_dir / "frames", SETTINGS.live_source)
-    log.info("frames: %s", frames.origin)
-    S.live = LiveLoop(S.cache, S.gpu_lock, frames)
-
-    # Baseline first so /telemetry is live ASAP; the rest preloads in the background.
-    S.preload_errors = S.cache.preload([BASELINE])
-    if S.preload_errors.get(BASELINE.slug()) is None:
-        S.live.set_config(BASELINE)
-    else:
-        log.error("baseline failed to load: %s — /telemetry will report no latency", S.preload_errors)
-    S.live.start()
-
-    if SETTINGS.preload == "all":
-        def _bg():
-            S.preload_errors.update(S.cache.preload([c for c in PROPOSED if c.key() != BASELINE.key()]))
-            log.info("preload done: %s", S.cache.status()["errors"] or "all ok")
-        threading.Thread(target=_bg, name="preload", daemon=True).start()
-
-    log.info("harness up: device_key=%s profile=%s model=%s", artifacts.device_key(), default_profile(S.probe), SETTINGS.model)
+    S.live = LiveLoop(S.cache, S.gpu_lock, FrameSource.empty())
+    S.preload_errors = {}
+    threading.Thread(target=_boot, name="boot", daemon=True).start()
     yield
     S.live.stop()
     S.probe.stop()
@@ -115,7 +147,14 @@ def telemetry():
         "device": artifacts.device_key(),
         "profile": default_profile(S.probe),
         "live_error": S.live.last_error,
+        "boot_phase": S.boot_phase,
     }
+
+
+def _require_booted() -> None:
+    if S.live.current is None:
+        raise HTTPException(503, f"harness not ready: boot_phase={S.boot_phase!r}"
+                                 + (f" error={S.boot_error}" if S.boot_error else ""))
 
 
 @app.get("/config")
@@ -126,6 +165,7 @@ def get_config():
 @app.post("/config")
 async def set_config(cfg: DeployConfig):
     cfg.validate_supported()
+    _require_booted()
     try:
         await run_in_threadpool(S.live.set_config, cfg)
     except RuntimeUnavailable as e:
@@ -136,6 +176,7 @@ async def set_config(cfg: DeployConfig):
 @app.post("/benchmark")
 async def benchmark(cfg: DeployConfig):
     cfg.validate_supported()
+    _require_booted()
     if not S.bench_lock.acquire(blocking=False):
         raise HTTPException(409, "a benchmark is already running")
     try:
@@ -174,7 +215,8 @@ def accuracy(runtime: str = "pytorch", precision: str = "fp32", resolution: int 
 @app.get("/device")
 def device():
     return {
-        **device_info(S.probe),
+        **(S.device_info or {"probe": S.probe.kind, "note": f"booting: {S.boot_phase}"}),
+        "boot_phase": S.boot_phase,
         "sample": S.probe.last.as_dict(),
         "runtimes": S.cache.status(),
         "accuracy_table": S.accuracy.summary(),
@@ -194,8 +236,11 @@ def health():
     missing = artifacts.missing_engines(PROPOSED)
     ready = S.live.current is not None and S.live.ring.stats()["n"] > 0
     return {
-        "ok": True,
+        "ok": S.boot_error is None,
         "ready": ready,
+        "boot_phase": S.boot_phase,
+        "boot_error": S.boot_error,
+        "uptime_s": round(time.time() - S.boot_ts, 1),
         "live_config": S.live.current.model_dump() if S.live.current else None,
         "frames_done": S.live.frames_done,
         "engines_missing": [str(p) for p in missing],

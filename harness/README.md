@@ -56,6 +56,19 @@ Then on the server laptop: `WORKLOAD_URL=http://<device-ip>:8100 make server`.
 | `LIVE_SOURCE` | frames dir | `video:/path/clip.mp4` to loop a video instead |
 | `THERMAL_MAX_C` | 80 GB10 / 85 Jetson | benchmark waits up to `THERMAL_WAIT_S` if hotter, then flags it |
 
+## If something looks stuck
+
+Nothing in the harness should ever block silently. Where to look:
+
+| Symptom | What's happening | Check |
+|---|---|---|
+| `make harness` prints "Uvicorn running" but numbers are 0 | Boot runs in the background: CUDA init + baseline load (5–30 s), then preloading engines one by one | `curl -s localhost:8100/health` → `boot_phase` says exactly what it's doing; `boot_error` if it died |
+| `build_engines.py` sits there | TensorRT engine builds take 1–10 min each (INT8 longer); TRT log lines scroll while it works | It prints `>> building …` with a timestamp before each; if you see `pip install` output, the network is the problem (see below) |
+| Anything hangs on first use of ultralytics | ultralytics tries to `pip install` missing packages and retries forever on a bad network | We set `YOLO_AUTOINSTALL=false` in the Makefile and tools so it fails fast instead; make sure `pip install -r harness/requirements.txt` finished (it includes `onnx`, `onnxslim`) |
+| `/benchmark` slow while preloading | Preload yields to a pending benchmark between models, but one in-flight engine deserialize (a few seconds) can't be interrupted | Wait for `boot_phase: ready`, or start with `PRELOAD=baseline` |
+| `/config` or `/benchmark` return 503 "not ready" | Baseline hasn't loaded yet | `/health` → `boot_phase` |
+| On Windows, `localhost` requests take ~2 s | IPv6-first resolution falling back to IPv4 | Use `127.0.0.1` |
+
 ## Laptop contract test (no GPU)
 
 ```bash

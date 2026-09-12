@@ -28,6 +28,15 @@ class FrameSource:
     LIVE_SOURCE=video:<path>. Falls back to synthetic frames if nothing is found so
     the harness (and the CPU-mode contract test) always boots."""
 
+    @classmethod
+    def empty(cls) -> "FrameSource":
+        """Placeholder used before boot finishes; never loads anything."""
+        fs = cls.__new__(cls)
+        fs.frames = [np.zeros((480, 640, 3), dtype=np.uint8)]
+        fs.origin = "none (booting)"
+        fs._i = 0
+        return fs
+
     def __init__(self, frames_dir: Path, source: str = "", max_frames: int = 64):
         self.frames: list[np.ndarray] = []
         self.origin = "synthetic"

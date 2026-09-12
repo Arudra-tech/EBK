@@ -21,6 +21,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+# never let ultralytics pip-install on its own (hangs on a bad network); fail with a clear error instead
+os.environ.setdefault("YOLO_AUTOINSTALL", "false")
 
 from harness import artifacts  # noqa: E402
 from harness.accuracy import entry_key  # noqa: E402

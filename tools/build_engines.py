@@ -11,6 +11,7 @@ Orin Nano: expect ~3-6 min per engine, INT8 longer. Run in tmux the moment prefl
 """
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+# never let ultralytics pip-install on its own (hangs on a bad network); fail with a clear error instead
+os.environ.setdefault("YOLO_AUTOINSTALL", "false")
 
 from harness import artifacts  # noqa: E402
 from harness.config import PROPOSED, SETTINGS, DeployConfig, all_configs  # noqa: E402
@@ -70,11 +73,15 @@ def export_engine_ultralytics(model, cfg: DeployConfig, data_yaml: Path, workspa
     if dst.exists() and not force:
         return dst, 0.0
     kw = dict(format="engine", imgsz=cfg.resolution, batch=cfg.batch_size, device=0,
-              workspace=workspace, dynamic=False, simplify=True, verbose=False)
+              workspace=workspace, dynamic=False, simplify=True, verbose=True)  # verbose: show TRT progress
     kw.update(quantize_kwargs(cfg.precision))
     if cfg.precision == "int8":
         # calibrate on the *train* split (calib300), never on the eval images
+        if not (data_yaml.parent / "coco").exists() and "coco_val200" in data_yaml.name:
+            raise FileNotFoundError("INT8 needs the calibration images: run `make subset` first (or --precisions fp16)")
         kw.update(data=str(data_yaml), fraction=1.0)
+    print(f"\n  >> building {cfg.label()} — TensorRT builds take 1-10 min (INT8 longer); "
+          f"this is NOT hung while TRT logs scroll. Started {time.strftime('%H:%M:%S')}", flush=True)
     t = time.time()
     out = model.export(**kw)
     dst.parent.mkdir(parents=True, exist_ok=True)
