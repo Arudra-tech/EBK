@@ -113,7 +113,7 @@ async def _run_inner(run_id: str, trigger: str) -> None:
             {},
             sort=[("ts", -1)],
         )
-        candidates = await proposer.propose(
+        rationale, candidates = await proposer.propose(
             baseline_cfg,
             history,
             slo,
@@ -122,9 +122,6 @@ async def _run_inner(run_id: str, trigger: str) -> None:
         )
         if not candidates:
             break
-        rationale = proposer.round_rationale(
-            baseline["median_latency_ms"], slo, round_num
-        )
         await db.agent_traces.insert_one(
             {"ts": now(), "run_id": run_id, "round": round_num, "reasoning": rationale}
         )
