@@ -18,8 +18,25 @@ MAX_ROUNDS = 2
 state: dict = {"active_run_id": None, "await_recovery": None}
 
 
-def _min_accuracy(baseline_acc: float, slo: Slo) -> float:
-    return baseline_acc - slo.max_accuracy_loss_pp / 100.0
+async def _accuracy_floor(baseline_acc: float, slo: Slo) -> float:
+    """Anchor the quality budget to the best accuracy ever measured, not the
+    current config's — otherwise each applied tradeoff (e.g. INT8 at 91.0%)
+    becomes the next run's baseline and the floor ratchets down 0.5 pp per run.
+
+    reference_accuracy is reset on server startup (see db.ensure_indexes), which
+    is the only point a workload-harness swap (simulator <-> real device) can
+    happen — WORKLOAD_URL is read once at import. Within a running server it's
+    always the same accuracy scale, so a big drop here is a real tradeoff, not
+    a different regime, and must not reset the floor.
+    """
+    settings = await db.get_settings()
+    ref = settings.get("reference_accuracy")
+    if ref is None or baseline_acc > ref:
+        ref = baseline_acc
+        await db.settings.update_one(
+            {"_id": "current"}, {"$set": {"reference_accuracy": ref}}
+        )
+    return ref - slo.max_accuracy_loss_pp / 100.0
 
 
 async def start_run(trigger: str) -> str:
@@ -88,16 +105,24 @@ async def _run_inner(run_id: str, trigger: str) -> None:
         baseline,
     )
 
-    min_acc = _min_accuracy(acc["accuracy"], slo)
+    min_acc = await _accuracy_floor(acc["accuracy"], slo)
     history: list[dict] = []
 
     for round_num in range(1, MAX_ROUNDS + 1):
-        candidates = proposer.propose(baseline_cfg, history, slo, round_num)
+        latest_telemetry = await db.telemetry.find_one(
+            {},
+            sort=[("ts", -1)],
+        )
+        reasoning, candidates = await proposer.propose(
+        baseline_cfg,
+        history,
+        slo,
+        round_num,
+        telemetry=latest_telemetry,
+        )
         if not candidates:
             break
-        rationale = proposer.round_rationale(
-            baseline["median_latency_ms"], slo, round_num
-        )
+        rationale = reasoning
         await db.agent_traces.insert_one(
             {"ts": now(), "run_id": run_id, "round": round_num, "reasoning": rationale}
         )
@@ -105,11 +130,15 @@ async def _run_inner(run_id: str, trigger: str) -> None:
 
         for cfg, why in candidates:
             await emit_event(
-                "candidate_proposed", f"Proposing {cfg.label()} — {why}", run_id,
+                "candidate_proposed",
+                f"Proposing {cfg.label()} — {why}",
+                run_id,
                 {"config": cfg.model_dump()},
             )
             await emit_event(
-                "benchmark_started", f"Benchmarking {cfg.label()} on hardware…", run_id,
+                "benchmark_started",
+                f"Benchmarking {cfg.label()} on hardware…",
+                run_id,
                 {"config": cfg.model_dump()},
             )
             bench_c = await workload.benchmark(cfg)

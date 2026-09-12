@@ -13,10 +13,10 @@ export default function SloCard({ appState, breaching, onSaved }) {
   }, [appState?.slo])
 
   async function save() {
-    await postJSON('/api/slo', {
-      target_latency_ms: parseFloat(target),
-      max_accuracy_loss_pp: parseFloat(budget),
-    })
+    const t = parseFloat(target)
+    const b = parseFloat(budget)
+    if (!Number.isFinite(t) || !Number.isFinite(b) || t <= 0 || b < 0) return
+    await postJSON('/api/slo', { target_latency_ms: t, max_accuracy_loss_pp: b })
     onSaved()
   }
 

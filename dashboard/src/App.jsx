@@ -33,7 +33,7 @@ export default function App() {
     try {
       const [state, exps] = await Promise.all([
         getJSON('/api/state'),
-        getJSON('/api/experiments?limit=12'),
+        getJSON('/api/experiments?run_id=latest&limit=12'),
       ])
       setAppState(state)
       setExperiments(exps)
@@ -67,8 +67,20 @@ export default function App() {
 
   const { telemetry, connected } = useLiveData({ onEvent })
 
+  // A WebSocket can stay "connected" while the harness itself is dead — the
+  // server just stops having anything to broadcast. Track the age of the
+  // newest sample (by its own server timestamp) so the badge can tell
+  // "healthy and quiet" apart from "frozen on the last good frame".
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
+
   const sloTarget = appState?.slo?.target_latency_ms
   const last = telemetry[telemetry.length - 1]
+  const lastSampleAgeMs = last?.ts ? now - new Date(last.ts).getTime() : null
+  const stale = connected && lastSampleAgeMs !== null && lastSampleAgeMs > 4000
   const breaching = !!(last && sloTarget && last.latency_ms > sloTarget)
   const appliedMarkers = events
     .filter((e) => e.type === 'config_applied')
@@ -92,9 +104,18 @@ export default function App() {
           >
             🔔 Enable pings
           </button>
-          <span className={`flex items-center gap-1.5 ${connected ? 'text-emerald-500' : 'text-red-500'}`}>
-            <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-500' : 'bg-red-500'}`} />
-            {connected ? 'live' : 'reconnecting'}
+          <span
+            className={`flex items-center gap-1.5 ${
+              !connected ? 'text-red-500' : stale ? 'text-amber-500' : 'text-emerald-500'
+            }`}
+            title={stale ? `No new telemetry for ${Math.round(lastSampleAgeMs / 1000)}s — is the harness still up?` : undefined}
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                !connected ? 'bg-red-500' : stale ? 'bg-amber-500' : 'bg-emerald-500'
+              }`}
+            />
+            {!connected ? 'reconnecting' : stale ? 'no data' : 'live'}
           </span>
         </div>
       </header>
