@@ -22,10 +22,16 @@ async def _accuracy_floor(baseline_acc: float, slo: Slo) -> float:
     """Anchor the quality budget to the best accuracy ever measured, not the
     current config's — otherwise each applied tradeoff (e.g. INT8 at 91.0%)
     becomes the next run's baseline and the floor ratchets down 0.5 pp per run.
+
+    If the new baseline is wildly off from the stored reference (e.g. the
+    workload harness was swapped — simulator's mock accuracy scale vs. a real
+    device's mAP50 table), the two aren't comparable: treat it as a fresh
+    accuracy regime rather than measuring a collapse against the old one.
     """
     settings = await db.get_settings()
     ref = settings.get("reference_accuracy")
-    if ref is None or baseline_acc > ref:
+    stale = ref is not None and abs(baseline_acc - ref) > 0.05  # different regime, not a regression
+    if ref is None or baseline_acc > ref or stale:
         ref = baseline_acc
         await db.settings.update_one(
             {"_id": "current"}, {"$set": {"reference_accuracy": ref}}

@@ -117,7 +117,7 @@ Important rules:
 - The hardware benchmark, not you, decides which configuration wins.
 
 Current context:
-{json.dumps(context, indent=2)}
+{json.dumps(context, indent=2, default=str)}
 
 Return JSON only in this format:
 
