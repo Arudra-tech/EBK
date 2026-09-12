@@ -1,0 +1,12 @@
+# MongoDB for teammates with Docker and for the GB10 (aarch64 images exist).
+# macOS without Docker: `make mongo` (Homebrew) — same localhost:27017 either way.
+services:
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:
