@@ -5,3 +5,12 @@ node_modules/
 dashboard/dist/
 .DS_Store
 *.log
+# hardware harness artifacts (per-device engines, weights, eval data)
+harness/artifacts/
+harness/data/coco/
+harness/data/frames/
+harness/data/_downloads/
+harness/data/*.resolved.yaml
+*.engine
+*.onnx
+*.pt

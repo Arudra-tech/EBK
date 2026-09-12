@@ -1,0 +1,9 @@
+# Device-agnostic deps for the harness. Install torch / tensorrt / onnxruntime
+# from the device-specific file FIRST (they must come from the right index), then this.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+ultralytics>=8.3
+numpy
+opencv-python-headless
+pyyaml
+nvidia-ml-py   # provides `import pynvml` (the old `pynvml` package is deprecated)

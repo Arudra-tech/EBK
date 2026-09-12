@@ -1,0 +1,9 @@
+# Dell Pro Max GB10 (DGX Spark class): aarch64, CUDA 13, driver 580+.
+#   pip install -r harness/requirements-gb10.txt && pip install -r harness/requirements.txt
+# If pip lands a "+cpu" torch, you used the wrong index — this file pins the cu130 one.
+--index-url https://download.pytorch.org/whl/cu130
+--extra-index-url https://pypi.org/simple
+torch
+torchvision
+tensorrt
+onnxruntime-gpu
