@@ -7,3 +7,6 @@ numpy
 opencv-python-headless
 pyyaml
 nvidia-ml-py   # provides `import pynvml` (the old `pynvml` package is deprecated)
+# needed by ultralytics engine/onnx export (pre-installed so export never pip-installs on its own)
+onnx
+onnxslim

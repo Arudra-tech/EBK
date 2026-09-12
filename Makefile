@@ -28,6 +28,9 @@ stop:
 
 # --- hardware harness (runs ON the GB10 / Jetson, in its own venv; see harness/README.md) ---
 PY ?= python3
+# ultralytics otherwise runs `pip install ...` on its own the first time it exports an
+# engine — on a slow/captive network that "hangs" for many minutes. Fail fast instead.
+export YOLO_AUTOINSTALL = false
 
 harness:          ## real workload service on :8100 (one worker — it owns the GPU)
 	$(PY) -m uvicorn harness.main:app --host 0.0.0.0 --port $${HARNESS_PORT:-8100} --workers 1

@@ -8,6 +8,7 @@ Don't debug a failing step for more than 25 minutes — take the ladder step.
 """
 
 import argparse
+import os
 import shutil
 import socket
 import subprocess
@@ -17,6 +18,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+# never let ultralytics pip-install on its own (hangs on a bad network); fail with a clear error instead
+os.environ.setdefault("YOLO_AUTOINSTALL", "false")
 
 from harness import artifacts  # noqa: E402
 from harness.config import BASELINE, PROPOSED, SETTINGS, DeployConfig  # noqa: E402

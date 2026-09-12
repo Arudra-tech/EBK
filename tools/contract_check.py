@@ -47,6 +47,8 @@ def main():
     ap.add_argument("--candidate", default='{"runtime":"tensorrt","precision":"fp16","resolution":640,"batch_size":1}')
     a = ap.parse_args()
     H = a.url.rstrip("/")
+    if "://" not in H:
+        H = "http://" + H
     cand = json.loads(a.candidate)
 
     st, cfg0, _ = req(f"{H}/config")
