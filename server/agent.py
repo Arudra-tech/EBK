@@ -8,6 +8,8 @@ chooses which experiments to run.
 import asyncio
 import uuid
 
+import httpx
+
 from . import db, proposer, workload
 from .bus import emit_event, now
 from .models import DeployConfig, Slo
@@ -16,6 +18,17 @@ MAX_ROUNDS = 2
 
 # Cross-module runtime state (watcher reads this).
 state: dict = {"active_run_id": None, "await_recovery": None}
+
+
+def _harness_detail(exc: httpx.HTTPStatusError) -> str:
+    """Short 'status: detail' string from a harness error response."""
+    resp = exc.response
+    try:
+        detail = resp.json().get("detail")
+    except Exception:  # noqa: BLE001 — non-JSON body
+        detail = None
+    detail = detail or resp.text.strip() or resp.reason_phrase
+    return f"{resp.status_code}: {str(detail)[:200]}"
 
 
 async def _accuracy_floor(baseline_acc: float, slo: Slo) -> float:
@@ -141,8 +154,27 @@ async def _run_inner(run_id: str, trigger: str) -> None:
                 run_id,
                 {"config": cfg.model_dump()},
             )
-            bench_c = await workload.benchmark(cfg)
-            acc_c = await workload.evaluate_accuracy(cfg)
+            try:
+                bench_c = await workload.benchmark(cfg)
+                acc_c = await workload.evaluate_accuracy(cfg)
+            except httpx.HTTPStatusError as exc:
+                # The harness cannot run this config on this device (no engine built,
+                # no accuracy entry, unsupported combination). The LLM is allowed to
+                # propose it; the hardware rejects it. Not an experiment (no numbers),
+                # so it is not stored in db.experiments — only logged and remembered.
+                reason = f"harness cannot run this configuration ({_harness_detail(exc)})"
+                await emit_event(
+                    "candidate_rejected",
+                    f"{cfg.label()} rejected: {reason}.",
+                    run_id,
+                    {"config": cfg.model_dump(), "valid": False,
+                     "rejection_reason": reason, "unrunnable": True},
+                )
+                history.append(
+                    {"config": cfg.model_dump(), "valid": False,
+                     "rejection_reason": reason, "unrunnable": True}
+                )
+                continue
             delta_pp = (acc_c["accuracy"] - acc["accuracy"]) * 100
             valid = acc_c["accuracy"] >= min_acc
             rejection = (
