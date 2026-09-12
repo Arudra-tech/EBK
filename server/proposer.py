@@ -1,13 +1,18 @@
 """Candidate proposal.
 
-Rule-based ladder for now. On hackathon day, swap the body of propose() for a
-Nemotron/OpenClaw call that returns the same (DeployConfig, reasoning) pairs —
-the controller, storage, and dashboard don't change. The LLM proposes; the
-hardware decides.
+Uses a local LLM to propose deployment configurations to benchmark.
+If the model is unavailable, malformed, or produces unusable candidates,
+the deterministic fallback ladder is used instead.
+
+The LLM proposes; the hardware decides.
 """
 
-from .models import DeployConfig, Slo
 import json
+
+import httpx
+
+from .models import DeployConfig, Slo
+
 
 ALLOWED_SEARCH_SPACE = {
     "runtime": ["pytorch", "onnx", "tensorrt"],
@@ -16,34 +21,51 @@ ALLOWED_SEARCH_SPACE = {
     "batch_size": [1],
 }
 
-# Ordered by expected value: safe speedups first, aggressive tradeoffs later.
+
+# Deterministic fallback if the local agent is unavailable.
 LADDER: list[tuple[DeployConfig, str]] = [
     (
         DeployConfig(
-            runtime="tensorrt", precision="fp16", resolution=640, batch_size=1
+            runtime="tensorrt",
+            precision="fp16",
+            resolution=640,
+            batch_size=1,
         ),
-        "FP16+TensorRT is the highest-value first experiment: large expected "
-        "speedup with usually zero accuracy cost.",
+        "FP16+TensorRT is the highest-value first experiment: "
+        "large expected speedup with usually zero accuracy cost.",
     ),
     (
         DeployConfig(
-            runtime="tensorrt", precision="fp16", resolution=512, batch_size=1
+            runtime="tensorrt",
+            precision="fp16",
+            resolution=512,
+            batch_size=1,
         ),
-        "Lower input resolution cuts compute quadratically, but is not "
+        "Lower input resolution cuts compute substantially, but is not "
         "semantics-preserving — the accuracy gate must validate it.",
     ),
     (
         DeployConfig(
-            runtime="tensorrt", precision="fp16", resolution=416, batch_size=1
+            runtime="tensorrt",
+            precision="fp16",
+            resolution=416,
+            batch_size=1,
         ),
-        "Aggressive resolution reduction as a last resort; expected to stress "
-        "the accuracy budget.",
+        "Aggressive resolution reduction as a last resort; expected to "
+        "stress the accuracy budget.",
     ),
     (
-        DeployConfig(runtime="pytorch", precision="fp16", resolution=640, batch_size=1),
-        "FP16 without TensorRT, in case the TensorRT path is unavailable on this device.",
+        DeployConfig(
+            runtime="pytorch",
+            precision="fp16",
+            resolution=640,
+            batch_size=1,
+        ),
+        "FP16 without TensorRT, in case the TensorRT path is unavailable "
+        "on this device.",
     ),
 ]
+
 
 ROUND_SIZE = 3
 
@@ -54,7 +76,9 @@ async def propose(
     slo: Slo,
     round_num: int,
     telemetry: dict | None = None,
-) -> list[tuple[DeployConfig, str]]:
+) -> tuple[str, list[tuple[DeployConfig, str]]]:
+    """Return agent reasoning and up to three untested candidates."""
+
     context = {
         "slo": {
             "target_latency_ms": slo.target_latency_ms,
@@ -65,7 +89,9 @@ async def propose(
             k: (
                 v.isoformat()
                 if hasattr(v, "isoformat")
-                else str(v) if k == "_id" else v
+                else str(v)
+                if k == "_id"
+                else v
             )
             for k, v in (telemetry or {}).items()
         },
@@ -73,37 +99,99 @@ async def propose(
         "round_num": round_num,
         "allowed_search_space": ALLOWED_SEARCH_SPACE,
     }
+
     prompt = build_agent_prompt(context)
-    
-    print(prompt)
-    """Return up to ROUND_SIZE untested candidates for this round."""
-    tested = {DeployConfig(**e["config"]).key() for e in history}
-    tested.add(baseline.key())
-    remaining = [(cfg, why) for cfg, why in LADDER if cfg.key() not in tested]
-    return remaining[:ROUND_SIZE]
+
+    try:
+        raw_response = await call_agent_model(prompt)
+
+        reasoning, candidates = parse_agent_response(raw_response)
+
+        # Never repeat the baseline or an experiment already run.
+        tested = {
+            DeployConfig(**experiment["config"]).key()
+            for experiment in history
+        }
+        tested.add(baseline.key())
+
+        candidates = [
+            (cfg, why)
+            for cfg, why in candidates
+            if cfg.key() not in tested
+        ]
+
+        # Bad or useless model output should fall back safely.
+        if not candidates:
+            raise ValueError("Agent returned no usable candidates")
+
+        return reasoning, candidates
+
+    except Exception:
+        # Deterministic fallback path.
+        tested = {
+            DeployConfig(**experiment["config"]).key()
+            for experiment in history
+        }
+        tested.add(baseline.key())
+
+        remaining = [
+            (cfg, why)
+            for cfg, why in LADDER
+            if cfg.key() not in tested
+        ]
+
+        fallback_reasoning = round_rationale(
+            baseline_latency=(
+                telemetry.get("latency_ms", 0)
+                if telemetry
+                else 0
+            ),
+            slo=slo,
+            round_num=round_num,
+        )
+
+        return fallback_reasoning, remaining[:ROUND_SIZE]
 
 
-def round_rationale(baseline_latency: float, slo: Slo, round_num: int) -> str:
-    ratio = baseline_latency / slo.target_latency_ms if slo.target_latency_ms else 0
+def round_rationale(
+    baseline_latency: float,
+    slo: Slo,
+    round_num: int,
+) -> str:
+    """Reasoning used by the deterministic fallback."""
+
+    ratio = (
+        baseline_latency / slo.target_latency_ms
+        if slo.target_latency_ms
+        else 0
+    )
+
     if round_num == 1:
         if ratio > 1:
             return (
-                f"Current deployment is {ratio:.1f}x over the {slo.target_latency_ms:.0f} ms "
-                f"target. Proposing a first round of candidates: safe precision/runtime "
-                f"changes first, then tradeoffs that spend accuracy budget."
+                f"Current deployment is {ratio:.1f}x over the "
+                f"{slo.target_latency_ms:.0f} ms target. "
+                "Proposing a first round of candidates: safe "
+                "precision/runtime changes first, then tradeoffs "
+                "that spend accuracy budget."
             )
+
         return (
-            f"Current deployment already meets the {slo.target_latency_ms:.0f} ms target "
-            f"({baseline_latency:.1f} ms). Testing whether any configuration is faster "
-            f"within the accuracy budget."
+            f"Current deployment already meets the "
+            f"{slo.target_latency_ms:.0f} ms target "
+            f"({baseline_latency:.1f} ms). Testing whether any "
+            "configuration is faster within the accuracy budget."
         )
+
     return (
-        "No round-1 candidate satisfied the SLO inside the accuracy budget. "
-        "Proposing more aggressive configurations."
+        "No round-1 candidate satisfied the SLO inside the accuracy "
+        "budget. Proposing more aggressive configurations."
     )
 
 
 def build_agent_prompt(context: dict) -> str:
+    """Create the prompt sent to the local deployment agent."""
+
     return f"""
 You are a local AI deployment performance engineer.
 
@@ -134,8 +222,69 @@ Return JSON only in this format:
   ]
 }}
 """
+
+
 async def call_agent_model(prompt: str) -> str:
-    """
-    Temporary placeholder for the local OpenClaw/Nemotron call.
-    """
-    raise NotImplementedError("Agent model not connected yet")
+    """Call the local Ollama model."""
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            "http://127.0.0.1:11434/api/generate",
+            json={
+                "model": "llama3.2:3b",
+                "prompt": prompt,
+                "stream": False,
+            },
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+        return data["response"]
+
+
+def parse_agent_response(
+    raw_response: str,
+) -> tuple[str, list[tuple[DeployConfig, str]]]:
+    """Validate model output and convert it into DeployConfig objects."""
+
+    data = json.loads(raw_response)
+
+    candidates: list[tuple[DeployConfig, str]] = []
+
+    for item in data["candidates"]:
+        if item["runtime"] not in ALLOWED_SEARCH_SPACE["runtime"]:
+            continue
+
+        if item["precision"] not in ALLOWED_SEARCH_SPACE["precision"]:
+            continue
+
+        if item["resolution"] not in ALLOWED_SEARCH_SPACE["resolution"]:
+            continue
+
+        if item["batch_size"] not in ALLOWED_SEARCH_SPACE["batch_size"]:
+            continue
+
+        cfg = DeployConfig(
+            runtime=item["runtime"],
+            precision=item["precision"],
+            resolution=item["resolution"],
+            batch_size=item["batch_size"],
+        )
+
+        candidates.append(
+            (
+                cfg,
+                item.get(
+                    "reason",
+                    "Proposed by local agent",
+                ),
+            )
+        )
+
+    reasoning = data.get(
+        "reasoning",
+        "No reasoning provided.",
+    )
+
+    return reasoning, candidates[:3]
