@@ -7,14 +7,17 @@ the deterministic fallback ladder is used instead.
 The LLM proposes; the hardware decides.
 """
 
+import asyncio
 import json
+import logging
+import os
+import re
 
 import httpx
 
 from .models import DeployConfig, Slo
 
-import asyncio
-import os
+log = logging.getLogger("ebk.proposer")
 
 
 ALLOWED_SEARCH_SPACE = {
@@ -129,7 +132,12 @@ async def propose(
 
         return reasoning, candidates
 
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — any agent failure must fall back
+        log.warning(
+            "agent backend %r failed, using deterministic fallback ladder: %s",
+            os.getenv("AGENT_BACKEND", "ollama"),
+            exc,
+        )
         # Deterministic fallback path.
         tested = {
             DeployConfig(**experiment["config"]).key()
@@ -227,14 +235,114 @@ Return JSON only in this format:
 """
 
 
+_WRAPPER_MARKERS = ("runId", "status", "summary", "result", "payloads", "final", "ok")
+_FENCE_RE = re.compile(r"```(?:json|JSON)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def strip_code_fence(text: str) -> str:
+    """Return the JSON object inside a reply: the body of the first ```json fence,
+    else the outermost {...} span if the model wrapped it in prose, else the text."""
+    m = _FENCE_RE.search(text)
+    if m:
+        return m.group(1)
+    text = text.strip()
+    if not text.startswith("{"):
+        start, end = text.find("{"), text.rfind("}")
+        if 0 <= start < end:
+            return text[start : end + 1]
+    return text
+
+
+def extract_agent_text(raw: str) -> str:
+    """Pull the assistant's reply string out of NemoClaw / OpenClaw stdout.
+
+    Observed on the GB10 with NemoClaw v0.0.123 (``nemoclaw <sandbox> agent --json``):
+
+        ✓ Active gateway set to 'nemoclaw'        <- may precede the JSON
+        {"runId": ..., "status": "ok",
+         "result": {"payloads": [{"text": "```json\n{...}\n```", "mediaUrl": null}],
+                    "meta": {"finalAssistantVisibleText": "...", ...}}}
+
+    Bare ``openclaw agent --json`` uses ``{"final": "...", "payloads": [{"text": ...}]}``.
+    Older/other wrappers may use a top-level response/message/content/text key.
+    """
+    raw = raw.strip()
+    unfenced = strip_code_fence(raw)
+    brace = unfenced.find("{")
+    data = None
+    # 1) as-is, 2) without a ```json fence, 3) from the first brace (skips a
+    # "✓ Active gateway ..." style preamble line).
+    for attempt in (raw, unfenced, unfenced[brace:] if brace >= 0 else None):
+        if attempt is None:
+            continue
+        try:
+            data = json.loads(attempt)
+            break
+        except json.JSONDecodeError:
+            continue
+    if data is None:
+        # Not JSON at all — assume the model text was printed directly.
+        return unfenced
+
+    if isinstance(data, str):
+        return strip_code_fence(data)
+    if not isinstance(data, dict):
+        raise ValueError(f"Unexpected agent output type {type(data).__name__}: {raw[:200]}")
+
+    def _payload_text(obj) -> str | None:
+        payloads = obj.get("payloads") if isinstance(obj, dict) else None
+        if isinstance(payloads, list):
+            for item in payloads:
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    return item["text"]
+        return None
+
+    result = data.get("result")
+    if isinstance(result, dict):
+        text = _payload_text(result)
+        if text is None:
+            meta = result.get("meta")
+            if isinstance(meta, dict):
+                for key in ("finalAssistantVisibleText", "finalAssistantRawText"):
+                    if isinstance(meta.get(key), str):
+                        text = meta[key]
+                        break
+        if text is not None:
+            return strip_code_fence(text)
+
+    if isinstance(data.get("final"), str):
+        return strip_code_fence(data["final"])
+    text = _payload_text(data)
+    if text is not None:
+        return strip_code_fence(text)
+
+    for key in ("response", "message", "content", "text"):
+        if isinstance(data.get(key), str):
+            return strip_code_fence(data[key])
+
+    if any(k in data for k in _WRAPPER_MARKERS):
+        # Looks like a NemoClaw/OpenClaw envelope but carries no reply text.
+        raise ValueError(f"Could not find agent response in NemoClaw output: {raw[:500]}")
+
+    # No envelope at all: the agent JSON itself was printed. Hand it back verbatim
+    # and let parse_agent_response() validate it.
+    return json.dumps(data)
+
+
 async def call_agent_model(prompt: str) -> str:
+    """Send the prompt to the configured local agent and return its reply text.
+
+    AGENT_BACKEND=nemoclaw  -> NemoClaw/OpenClaw sandbox (GB10; local inference)
+    AGENT_BACKEND=ollama    -> direct Ollama on :11434 (Mac development)
+    """
     backend = os.getenv("AGENT_BACKEND", "ollama").lower()
 
     if backend == "nemoclaw":
         sandbox = os.getenv("NEMOCLAW_SANDBOX", "ebk-agent")
         session_id = os.getenv("NEMOCLAW_SESSION_ID", "ebk-optimizer")
+        timeout_s = os.getenv("NEMOCLAW_TIMEOUT_S", "60")
 
-        proc = await asyncio.create_subprocess_exec(
+        cmd = [
             "nemoclaw",
             sandbox,
             "agent",
@@ -244,41 +352,40 @@ async def call_agent_model(prompt: str) -> str:
             prompt,
             "--json",
             "--timeout",
-            "60",
+            timeout_s,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=float(timeout_s) + 15.0
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise RuntimeError(f"NemoClaw did not answer within {timeout_s}s (+15s grace)")
 
-        stdout, stderr = await proc.communicate()
+        out = stdout.decode(errors="replace")
+        err = stderr.decode(errors="replace").strip()
+        if err:
+            log.debug("nemoclaw stderr: %s", err[:500])
+        log.info("nemoclaw stdout (%d bytes): %s", len(out), out.strip()[:500])
 
         if proc.returncode != 0:
             raise RuntimeError(
-                f"NemoClaw failed: {stderr.decode().strip()}"
+                f"NemoClaw exited {proc.returncode}: {err or out.strip()[:500]}"
             )
 
-        raw = stdout.decode().strip()
-
-        # OpenClaw/NemoClaw JSON wrapper may contain the assistant response.
-        data = json.loads(raw)
-
-        # Keep this flexible because exact wrapper shape can vary.
-        if isinstance(data, str):
-            return data
-
-        for key in ("response", "message", "content", "text"):
-            if key in data and isinstance(data[key], str):
-                return data[key]
-
-        raise ValueError(
-            f"Could not find agent response in NemoClaw output: {raw}"
-        )
+        return extract_agent_text(out)
 
     # Development fallback: direct local Ollama.
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             "http://127.0.0.1:11434/api/generate",
             json={
-                "model": "llama3.2:3b",
+                "model": os.getenv("OLLAMA_MODEL", "llama3.2:3b"),
                 "prompt": prompt,
                 "stream": False,
             },
@@ -287,7 +394,7 @@ async def call_agent_model(prompt: str) -> str:
         response.raise_for_status()
 
         data = response.json()
-        return data["response"]
+        return strip_code_fence(data["response"])
 
 
 def parse_agent_response(

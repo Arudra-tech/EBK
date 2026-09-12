@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { getJSON } from './api'
 
-const WS_URL = 'ws://localhost:8000/ws'
+const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000/ws'
 const BUFFER_MAX = 320 // ~105s at 3 Hz
 
 // Live telemetry + event stream over WebSocket, with polling fallback.

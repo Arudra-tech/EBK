@@ -1,7 +1,10 @@
+# Backend (server/) deps. The PyPI package for PyTorch is `torch`, never `pytorch`.
+# On a GPU device install torch from the right CUDA index FIRST:
+#   pip install -r harness/requirements-gb10.txt && pip install -r harness/requirements.txt
 fastapi
-uvicorn
+uvicorn[standard]
 pymongo
 httpx
 pydantic
-pytorch
+torch
 ultralytics
