@@ -103,7 +103,17 @@ async def _run_inner(run_id: str, trigger: str) -> None:
     history: list[dict] = []
 
     for round_num in range(1, MAX_ROUNDS + 1):
-        candidates = proposer.propose(baseline_cfg, history, slo, round_num)
+        latest_telemetry = await db.telemetry.find_one(
+            {},
+            sort=[("ts", -1)],
+        )
+        candidates = await proposer.propose(
+            baseline_cfg,
+            history,
+            slo,
+            round_num,
+            telemetry=latest_telemetry,
+        )
         if not candidates:
             break
         rationale = proposer.round_rationale(
@@ -116,11 +126,15 @@ async def _run_inner(run_id: str, trigger: str) -> None:
 
         for cfg, why in candidates:
             await emit_event(
-                "candidate_proposed", f"Proposing {cfg.label()} — {why}", run_id,
+                "candidate_proposed",
+                f"Proposing {cfg.label()} — {why}",
+                run_id,
                 {"config": cfg.model_dump()},
             )
             await emit_event(
-                "benchmark_started", f"Benchmarking {cfg.label()} on hardware…", run_id,
+                "benchmark_started",
+                f"Benchmarking {cfg.label()} on hardware…",
+                run_id,
                 {"config": cfg.model_dump()},
             )
             bench_c = await workload.benchmark(cfg)

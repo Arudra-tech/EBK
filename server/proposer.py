@@ -7,30 +7,35 @@ hardware decides.
 """
 
 from .models import DeployConfig, Slo
+import json
+
+ALLOWED_SEARCH_SPACE = {
+    "runtime": ["pytorch", "onnx", "tensorrt"],
+    "precision": ["fp32", "fp16"],
+    "resolution": [640, 512, 416],
+    "batch_size": [1],
+}
 
 # Ordered by expected value: safe speedups first, aggressive tradeoffs later.
 LADDER: list[tuple[DeployConfig, str]] = [
     (
-        DeployConfig(runtime="tensorrt", precision="fp16", resolution=640, batch_size=1),
+        DeployConfig(
+            runtime="tensorrt", precision="fp16", resolution=640, batch_size=1
+        ),
         "FP16+TensorRT is the highest-value first experiment: large expected "
         "speedup with usually zero accuracy cost.",
     ),
     (
-        DeployConfig(runtime="tensorrt", precision="int8", resolution=640, batch_size=1),
-        "The SLO likely needs more than FP16 alone; INT8 trades a small, "
-        "measurable amount of accuracy for further latency reduction.",
-    ),
-    (
-        DeployConfig(runtime="tensorrt", precision="fp16", resolution=512, batch_size=1),
+        DeployConfig(
+            runtime="tensorrt", precision="fp16", resolution=512, batch_size=1
+        ),
         "Lower input resolution cuts compute quadratically, but is not "
         "semantics-preserving — the accuracy gate must validate it.",
     ),
     (
-        DeployConfig(runtime="tensorrt", precision="int8", resolution=512, batch_size=1),
-        "Combining INT8 with reduced resolution, in case neither alone meets the SLO.",
-    ),
-    (
-        DeployConfig(runtime="tensorrt", precision="fp16", resolution=416, batch_size=1),
+        DeployConfig(
+            runtime="tensorrt", precision="fp16", resolution=416, batch_size=1
+        ),
         "Aggressive resolution reduction as a last resort; expected to stress "
         "the accuracy budget.",
     ),
@@ -43,9 +48,34 @@ LADDER: list[tuple[DeployConfig, str]] = [
 ROUND_SIZE = 3
 
 
-def propose(
-    baseline: DeployConfig, history: list[dict], slo: Slo, round_num: int
+async def propose(
+    baseline: DeployConfig,
+    history: list[dict],
+    slo: Slo,
+    round_num: int,
+    telemetry: dict | None = None,
 ) -> list[tuple[DeployConfig, str]]:
+    context = {
+        "slo": {
+            "target_latency_ms": slo.target_latency_ms,
+            "max_accuracy_loss_pp": slo.max_accuracy_loss_pp,
+        },
+        "baseline_config": baseline.model_dump(),
+        "telemetry": {
+            k: (
+                v.isoformat()
+                if hasattr(v, "isoformat")
+                else str(v) if k == "_id" else v
+            )
+            for k, v in (telemetry or {}).items()
+        },
+        "previous_experiments": history,
+        "round_num": round_num,
+        "allowed_search_space": ALLOWED_SEARCH_SPACE,
+    }
+    prompt = build_agent_prompt(context)
+    
+    print(prompt)
     """Return up to ROUND_SIZE untested candidates for this round."""
     tested = {DeployConfig(**e["config"]).key() for e in history}
     tested.add(baseline.key())
@@ -71,3 +101,41 @@ def round_rationale(baseline_latency: float, slo: Slo, round_num: int) -> str:
         "No round-1 candidate satisfied the SLO inside the accuracy budget. "
         "Proposing more aggressive configurations."
     )
+
+
+def build_agent_prompt(context: dict) -> str:
+    return f"""
+You are a local AI deployment performance engineer.
+
+Your job is to choose up to 3 deployment configurations to benchmark next.
+
+Important rules:
+- Do NOT predict or invent latency or accuracy values.
+- Only choose configurations from allowed_search_space.
+- Do NOT repeat configurations already present in previous_experiments.
+- Prefer changes likely to reduce latency while preserving accuracy.
+- The hardware benchmark, not you, decides which configuration wins.
+
+Current context:
+{json.dumps(context, indent=2)}
+
+Return JSON only in this format:
+
+{{
+  "reasoning": "brief explanation",
+  "candidates": [
+    {{
+      "runtime": "tensorrt",
+      "precision": "fp16",
+      "resolution": 640,
+      "batch_size": 1,
+      "reason": "why this experiment is worth testing"
+    }}
+  ]
+}}
+"""
+async def call_agent_model(prompt: str) -> str:
+    """
+    Temporary placeholder for the local OpenClaw/Nemotron call.
+    """
+    raise NotImplementedError("Agent model not connected yet")
