@@ -1,0 +1,89 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Harness (real workload, :8100)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["harness.main:app", "--host", "0.0.0.0", "--port", "8100", "--workers", "1"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Harness (CPU contract test, no GPU)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["harness.main:app", "--host", "0.0.0.0", "--port", "8100", "--workers", "1"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "HARNESS_BACKEND_MAP": "pytorch=cpu,tensorrt=cpu",
+        "ACCURACY_TABLE": "harness/artifacts/accuracy_example.json"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Build TensorRT engines",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/build_engines.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Precompute accuracy table",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/precompute_accuracy.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Preflight checks",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/preflight.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Build COCO eval subset",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/harness/data/make_subset.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "EBK server (:8000)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["server.app:app", "--port", "8000"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Simulator (:8100)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["simulator.main:app", "--port", "8100"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Full stack (harness + server)",
+      "configurations": ["Harness (real workload, :8100)", "EBK server (:8000)"],
+      "stopAll": true
+    }
+  ]
+}
