@@ -36,6 +36,10 @@ async def ensure_indexes() -> None:
     await settings.update_one(
         {"_id": "current"}, {"$setOnInsert": DEFAULT_SETTINGS}, upsert=True
     )
+    # reference_accuracy is a within-process ratchet (see agent._accuracy_floor):
+    # reset it on every boot, since a workload-harness swap (WORKLOAD_URL) can
+    # only happen between processes, never during one.
+    await settings.update_one({"_id": "current"}, {"$unset": {"reference_accuracy": ""}})
     for profile in (
         {
             "_id": "edge-hi",

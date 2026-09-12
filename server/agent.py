@@ -23,15 +23,15 @@ async def _accuracy_floor(baseline_acc: float, slo: Slo) -> float:
     current config's — otherwise each applied tradeoff (e.g. INT8 at 91.0%)
     becomes the next run's baseline and the floor ratchets down 0.5 pp per run.
 
-    If the new baseline is wildly off from the stored reference (e.g. the
-    workload harness was swapped — simulator's mock accuracy scale vs. a real
-    device's mAP50 table), the two aren't comparable: treat it as a fresh
-    accuracy regime rather than measuring a collapse against the old one.
+    reference_accuracy is reset on server startup (see db.ensure_indexes), which
+    is the only point a workload-harness swap (simulator <-> real device) can
+    happen — WORKLOAD_URL is read once at import. Within a running server it's
+    always the same accuracy scale, so a big drop here is a real tradeoff, not
+    a different regime, and must not reset the floor.
     """
     settings = await db.get_settings()
     ref = settings.get("reference_accuracy")
-    stale = ref is not None and abs(baseline_acc - ref) > 0.05  # different regime, not a regression
-    if ref is None or baseline_acc > ref or stale:
+    if ref is None or baseline_acc > ref:
         ref = baseline_acc
         await db.settings.update_one(
             {"_id": "current"}, {"$set": {"reference_accuracy": ref}}
