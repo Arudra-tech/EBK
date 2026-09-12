@@ -31,6 +31,20 @@ class RuntimeUnavailable(RuntimeError):
     """Raised when a config cannot be loaded on this device (missing engine, no CUDA, ...)."""
 
 
+def precision_kwargs(half: bool) -> dict:
+    """ultralytics >= 8.4.80 takes quantize=16 on predict/val; older takes half=True.
+    fp32 passes nothing (the default)."""
+    if not half:
+        return {}
+    try:
+        import ultralytics
+
+        ver = tuple(int(x) for x in ultralytics.__version__.split(".")[:3])
+    except Exception:
+        ver = (0, 0, 0)
+    return {"quantize": 16} if ver >= (8, 4, 80) else {"half": True}
+
+
 _DEFAULT_CPU_THREADS: int | None = None
 
 
@@ -148,10 +162,10 @@ class UltralyticsRuntime(Runtime):
         results = self.model.predict(
             frames,
             imgsz=self.cfg.resolution,
-            half=self.half,
             device=self.device,
             conf=0.25,
             verbose=False,
+            **precision_kwargs(self.half),
         )
         r0 = results[0]
         sp = getattr(r0, "speed", None) or {}

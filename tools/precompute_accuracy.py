@@ -26,7 +26,7 @@ from harness import artifacts  # noqa: E402
 from harness.accuracy import entry_key  # noqa: E402
 from harness.config import BASELINE, PROPOSED, SETTINGS, all_configs  # noqa: E402
 from harness.data import resolve_dataset_yaml  # noqa: E402
-from harness.runtimes import make_runtime  # noqa: E402
+from harness.runtimes import make_runtime, precision_kwargs  # noqa: E402
 
 
 def main():
@@ -65,7 +65,7 @@ def main():
             kw = dict(data=str(data_yaml), imgsz=c.resolution, batch=1, rect=False, conf=0.001, iou=0.7,
                       device=rt.device, plots=False, verbose=False, save_json=False)
             if rt.backend in ("pytorch", "onnx"):
-                kw["half"] = rt.half
+                kw.update(precision_kwargs(rt.half))
             t = time.time()
             m = rt.model.val(**kw)
             secs = time.time() - t
