@@ -15,7 +15,7 @@ from .models import DeployConfig, Slo
 
 
 ALLOWED_SEARCH_SPACE = {
-    "runtime": ["pytorch", "onnx", "tensorrt"],
+    "runtime": ["pytorch", "tensorrt"],
     "precision": ["fp32", "fp16"],
     "resolution": [640, 512, 416],
     "batch_size": [1],
@@ -205,7 +205,7 @@ Important rules:
 - The hardware benchmark, not you, decides which configuration wins.
 
 Current context:
-{json.dumps(context, indent=2)}
+{json.dumps(context, indent=2, default=str)}
 
 Return JSON only in this format:
 
