@@ -18,8 +18,19 @@ MAX_ROUNDS = 2
 state: dict = {"active_run_id": None, "await_recovery": None}
 
 
-def _min_accuracy(baseline_acc: float, slo: Slo) -> float:
-    return baseline_acc - slo.max_accuracy_loss_pp / 100.0
+async def _accuracy_floor(baseline_acc: float, slo: Slo) -> float:
+    """Anchor the quality budget to the best accuracy ever measured, not the
+    current config's — otherwise each applied tradeoff (e.g. INT8 at 91.0%)
+    becomes the next run's baseline and the floor ratchets down 0.5 pp per run.
+    """
+    settings = await db.get_settings()
+    ref = settings.get("reference_accuracy")
+    if ref is None or baseline_acc > ref:
+        ref = baseline_acc
+        await db.settings.update_one(
+            {"_id": "current"}, {"$set": {"reference_accuracy": ref}}
+        )
+    return ref - slo.max_accuracy_loss_pp / 100.0
 
 
 async def start_run(trigger: str) -> str:
@@ -88,7 +99,7 @@ async def _run_inner(run_id: str, trigger: str) -> None:
         baseline,
     )
 
-    min_acc = _min_accuracy(acc["accuracy"], slo)
+    min_acc = await _accuracy_floor(acc["accuracy"], slo)
     history: list[dict] = []
 
     for round_num in range(1, MAX_ROUNDS + 1):

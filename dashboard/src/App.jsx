@@ -33,7 +33,7 @@ export default function App() {
     try {
       const [state, exps] = await Promise.all([
         getJSON('/api/state'),
-        getJSON('/api/experiments?limit=12'),
+        getJSON('/api/experiments?run_id=latest&limit=12'),
       ])
       setAppState(state)
       setExperiments(exps)

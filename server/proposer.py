@@ -56,10 +56,16 @@ def propose(
 def round_rationale(baseline_latency: float, slo: Slo, round_num: int) -> str:
     ratio = baseline_latency / slo.target_latency_ms if slo.target_latency_ms else 0
     if round_num == 1:
+        if ratio > 1:
+            return (
+                f"Current deployment is {ratio:.1f}x over the {slo.target_latency_ms:.0f} ms "
+                f"target. Proposing a first round of candidates: safe precision/runtime "
+                f"changes first, then tradeoffs that spend accuracy budget."
+            )
         return (
-            f"Current deployment is {ratio:.1f}x over the {slo.target_latency_ms:.0f} ms "
-            f"target. Proposing a first round of candidates: safe precision/runtime "
-            f"changes first, then tradeoffs that spend accuracy budget."
+            f"Current deployment already meets the {slo.target_latency_ms:.0f} ms target "
+            f"({baseline_latency:.1f} ms). Testing whether any configuration is faster "
+            f"within the accuracy budget."
         )
     return (
         "No round-1 candidate satisfied the SLO inside the accuracy budget. "

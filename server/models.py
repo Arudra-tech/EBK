@@ -1,6 +1,6 @@
 """Pydantic schemas shared across the server."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DeployConfig(BaseModel):
@@ -17,5 +17,5 @@ class DeployConfig(BaseModel):
 
 
 class Slo(BaseModel):
-    target_latency_ms: float = 25.0
-    max_accuracy_loss_pp: float = 0.5
+    target_latency_ms: float = Field(25.0, gt=0)
+    max_accuracy_loss_pp: float = Field(0.5, ge=0)
