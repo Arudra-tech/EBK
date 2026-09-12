@@ -1,0 +1,7 @@
+# Laptop contract test (no GPU). Runs the harness in CPU mode against the server:
+#   pip install -r harness/requirements-cpu.txt -r harness/requirements.txt
+#   HARNESS_BACKEND_MAP=pytorch=cpu,tensorrt=cpu uvicorn harness.main:app --port 8100
+--index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://pypi.org/simple
+torch
+torchvision

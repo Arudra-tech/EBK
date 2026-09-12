@@ -60,6 +60,8 @@ Markdown run report from the change-log panel.
 | Path | What |
 |---|---|
 | `simulator/main.py` | Mock GB10 workload. Implements the 4-endpoint harness contract with a config-keyed latency model + accuracy table. |
+| `harness/` | **Real** workload service for the GB10 / Jetson Orin Nano: live YOLO loop, NVML/tegrastats telemetry, benchmark harness, precomputed accuracy table. Same 4 endpoints. See [harness/README.md](harness/README.md). |
+| `tools/` | Device-side scripts: `preflight.py` (10:05 checks), `build_engines.py`, `precompute_accuracy.py`, `contract_check.py`, `lock_clocks.sh`. |
 | `server/` | FastAPI: REST + WebSocket (`/ws`), always-on watcher, optimization controller (`agent.py`), candidate proposer (`proposer.py`), Mongo layer (`db.py`). |
 | `dashboard/` | Vite + React + Tailwind + Recharts ops console. |
 
