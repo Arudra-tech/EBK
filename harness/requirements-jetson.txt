@@ -1,0 +1,12 @@
+# Jetson Orin Nano, JetPack 6.x (L4T 36.4, CUDA 12.6, TensorRT 10.3, Python 3.10).
+#   pip install -r harness/requirements-jetson.txt && pip install -r harness/requirements.txt
+# TensorRT python bindings come from JetPack apt, not pip:
+#   sudo apt install python3-libnvinfer python3-libnvinfer-dev
+# and you need the SYSTEM python3 (or a venv with --system-site-packages) to see them.
+# Generic download.pytorch.org cu126 aarch64 wheels have produced kernel errors on Orin —
+# use the jetson-ai-lab index. If JetPack 7.x: swap jp6/cu126 for the jp7 index.
+--index-url https://pypi.jetson-ai-lab.io/jp6/cu126/+simple/
+--extra-index-url https://pypi.org/simple
+torch
+torchvision
+onnxruntime-gpu
