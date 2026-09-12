@@ -13,6 +13,9 @@ import httpx
 
 from .models import DeployConfig, Slo
 
+import asyncio
+import os
+
 
 ALLOWED_SEARCH_SPACE = {
     "runtime": ["pytorch", "tensorrt"],
@@ -225,8 +228,52 @@ Return JSON only in this format:
 
 
 async def call_agent_model(prompt: str) -> str:
-    """Call the local Ollama model."""
+    backend = os.getenv("AGENT_BACKEND", "ollama").lower()
 
+    if backend == "nemoclaw":
+        sandbox = os.getenv("NEMOCLAW_SANDBOX", "ebk-agent")
+        session_id = os.getenv("NEMOCLAW_SESSION_ID", "ebk-optimizer")
+
+        proc = await asyncio.create_subprocess_exec(
+            "nemoclaw",
+            sandbox,
+            "agent",
+            "--session-id",
+            session_id,
+            "-m",
+            prompt,
+            "--json",
+            "--timeout",
+            "60",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"NemoClaw failed: {stderr.decode().strip()}"
+            )
+
+        raw = stdout.decode().strip()
+
+        # OpenClaw/NemoClaw JSON wrapper may contain the assistant response.
+        data = json.loads(raw)
+
+        # Keep this flexible because exact wrapper shape can vary.
+        if isinstance(data, str):
+            return data
+
+        for key in ("response", "message", "content", "text"):
+            if key in data and isinstance(data[key], str):
+                return data[key]
+
+        raise ValueError(
+            f"Could not find agent response in NemoClaw output: {raw}"
+        )
+
+    # Development fallback: direct local Ollama.
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             "http://127.0.0.1:11434/api/generate",
