@@ -82,7 +82,8 @@ export default function LatencyChart({ telemetry, sloTarget, appliedMarkers }) {
                 x={new Date(m.ts).getTime()}
                 stroke="#818cf8"
                 strokeDasharray="2 4"
-                label={{ value: configLabel(m.config), fill: '#818cf8', fontSize: 9, angle: -90, position: 'insideTopLeft' }}
+                ifOverflow="discard"
+                label={{ value: `⚙ ${configLabel(m.config)}`, fill: '#818cf8', fontSize: 9, position: 'insideTopLeft' }}
               />
             ))}
             <Area

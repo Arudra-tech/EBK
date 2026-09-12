@@ -31,13 +31,17 @@ def clean(doc: dict | None) -> dict | None:
 @router.get("/state")
 async def get_state():
     settings = await db.get_settings()
-    current = await workload.get_config()
+    try:
+        current = (await workload.get_config()).model_dump()
+    except Exception:
+        current = None  # workload harness down — dashboard must still load
     latest_run = await db.runs.find_one({}, sort=[("started_at", DESCENDING)])
     return {
         "slo": settings["slo"],
         "device_profile": settings.get("device_profile"),
         "watcher_enabled": settings.get("watcher_enabled", True),
-        "current_config": current.model_dump(),
+        "reference_accuracy": settings.get("reference_accuracy"),
+        "current_config": current,
         "active_run_id": agent.state["active_run_id"],
         "latest_run": clean(latest_run),
     }
@@ -83,6 +87,11 @@ async def get_run(run_id: str):
 
 @router.get("/experiments")
 async def list_experiments(run_id: str | None = None, limit: int = 50):
+    if run_id == "latest":
+        latest = await db.runs.find_one({}, sort=[("started_at", DESCENDING)])
+        run_id = latest["run_id"] if latest else None
+        if run_id is None:
+            return []
     query = {"run_id": run_id} if run_id else {}
     cursor = db.experiments.find(query, sort=[("ts", DESCENDING)]).limit(limit)
     return [clean(d) async for d in cursor]
